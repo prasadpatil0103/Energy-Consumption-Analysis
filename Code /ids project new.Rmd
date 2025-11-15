@@ -1,0 +1,755 @@
+```{r}
+library(arrow)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(caret)
+library(kernlab)
+library(MLmetrics)
+library(randomForest)
+library(xgboost)
+
+
+# The static house data is fetched using read_parquet function.
+static_house_data <- read_parquet("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/static_house_info.parquet")
+# static_house_data <- static_house_data %>% filter(in.city != "Not in a census Place") %>% filter(in.city != "In another census Place")
+# The metadata is data related to data.
+meta_data <- read_csv("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/data_dictionary.csv")
+```
+```{r}
+# Finding missing values in static housing data
+sum(is.na(static_house_data))
+```
+
+```{r}
+static_house_data<-select(static_house_data,-'in.ahs_region',
+            -'in.ashrae_iecc_climate_zone_2004',
+            -'in.ashrae_iecc_climate_zone_2004_2_a_split',
+            -'in.bathroom_spot_vent_hour',
+            -'in.cec_climate_zone',
+            -'in.census_division',
+            -'in.census_division_recs',
+            -'in.census_region',
+            -'in.cooling_setpoint_has_offset',
+            -'in.cooling_setpoint_offset_magnitude',
+            -'in.cooling_setpoint_offset_period',
+            -'in.county_and_puma',
+            -'in.dehumidifier',
+            -'in.door_area',
+            -'in.doors',
+            -'in.ducts',
+            -'in.eaves',
+            -'in.electric_vehicle',
+            -'in.emissions_electricity_folders',
+            -'in.emissions_electricity_units',
+            -'in.emissions_electricity_values_or_filepaths',
+            -'in.emissions_fossil_fuel_units',
+            -'in.emissions_fuel_oil_values',
+            -'in.emissions_natural_gas_values',
+            -'in.emissions_propane_values',
+            -'in.emissions_scenario_names',
+            -'in.emissions_types',
+            -'in.emissions_wood_values',
+            -'in.generation_and_emissions_assessment_region',
+            -'in.geometry_attic_type',
+            -'in.geometry_building_horizontal_location_mf',
+            -'in.geometry_building_horizontal_location_sfa',
+            -'in.geometry_building_level_mf',
+            -'in.geometry_building_number_units_mf',
+            -'in.geometry_building_number_units_sfa',
+            -'in.geometry_building_type_acs',
+            -'in.geometry_building_type_height',
+            -'in.geometry_building_type_recs',
+            -'in.geometry_floor_area',
+            -'in.geometry_story_bin',
+            -'in.geometry_wall_exterior_finish',
+            -'in.geometry_wall_type',
+            -'in.has_pv',
+            -'in.heating_setpoint_offset_period',
+            -'in.holiday_lighting',
+            -'in.hot_water_distribution',
+            -'in.hvac_has_shared_system',
+            -'in.hvac_secondary_heating_efficiency',
+            -'in.hvac_secondary_heating_type_and_fuel',
+            -'in.hvac_shared_efficiencies',
+            -'in.hvac_system_is_faulted',
+            -'in.hvac_system_single_speed_ac_airflow',
+            -'in.hvac_system_single_speed_ac_charge',
+            -'in.hvac_system_single_speed_ashp_airflow',
+            -'in.hvac_system_single_speed_ashp_charge',
+            -'in.interior_shading',
+            -'in.iso_rto_region',
+            -'in.lighting_other_use',
+            -'in.location_region',
+            -'in.mechanical_ventilation',
+            -'in.natural_ventilation',
+            -'in.neighbors',
+            -'in.overhangs',
+            -'in.plug_loads',
+            -'in.radiant_barrier',
+            -'in.schedules',
+            -'in.simulation_control_run_period_begin_day_of_month',
+            -'in.simulation_control_run_period_begin_month',
+            -'in.simulation_control_run_period_calendar_year',
+            -'in.simulation_control_run_period_end_day_of_month',
+            -'in.simulation_control_run_period_end_month',
+            -'in.simulation_control_timestep',
+            -'in.solar_hot_water',
+            -'in.units_represented',
+            -'in.water_heater_in_unit',
+            -'in.window_areas')
+```
+
+
+```{r}
+# We have selected these particular counties because the temperature in these area 
+# is comparetively high
+housing_data <- static_house_data %>% filter(in.county %in% c("G4500910","G4500810","G4500450","G4500190","G4500070"))
+list_county <-unique(housing_data$in.county)
+list_county # List of unique counties
+
+for (i in list_county) {
+  county_name <- i
+  url_weather <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/",i,".csv")
+  weather_data_july <- read_csv(url_weather)
+  weather_data_july <- na.omit(weather_data_july) # to remove the missing values
+  weather_data_july <- weather_data_july %>% filter(substr(weather_data_july$date_time,6,7) == "07") 
+  weather_data_july <- weather_data_july %>% rename(time = date_time) #The column name date_time is renamed to time
+  weather_data_july <- add_column(weather_data_july, county_name) # new column is added called county name.
+  assign(paste0("weather_july_", i), weather_data_july) # assigning name of each weather data according to county name.
+}
+
+# The for loop is applied where the data of weather is fetched according to the
+# different counties that are considered. With the help of substr function only July 
+# months data is filtered. 
+
+```
+
+
+
+```{r}
+# The function is to merge the housing data with energy data. The merge data is
+# than returned.
+
+merged_function_house <- function(energy_july){
+  merged_data <- merge(random_house_data,energy_july)
+  return(merged_data)
+}
+```
+
+
+```{r}
+# The function "rbind" is used to merge all the weather dataframe of considered 
+# counties.
+
+combined_weather_data <- rbind(weather_july_G4500190,
+                               weather_july_G4500450,
+                               weather_july_G4500810,
+                               weather_july_G4500910,
+                               weather_july_G4500070)
+```
+
+
+```{r}
+# The function is to merge combined weather data with merged_energy_housing data.
+# the final merged data is returned.
+
+merged_function_weather <- function(weather_data_new){
+  merged_data <- merge(combined_weather_data,weather_data_new)
+  return(merged_data)
+}
+
+```
+
+
+```{r}
+region <- "south carolina"
+county_list <- as.list(static_house_data$bldg_id) # List of house number is fetched.
+random_house_data <- housing_data[sample(nrow(housing_data), 800 , replace = TRUE), ] # Random sample of 100 is taken from it.
+random_house_data <- random_house_data %>% rename(county_name = in.county)# rename of column is dane to county_name
+random_house_data$region <- "south carolina"
+list_house <- random_house_data$bldg_id # List of house number is fetched from random sampling.
+```
+
+
+
+```{r}
+# Fetching energy data for every houses.
+for (i in list_house) {
+    bldg_id <- i
+    url_data <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/2023-houseData/",i,".parquet")
+    energy_data <- read_parquet(url_data) # energy data is fetched according to house number
+    energy_july <- energy_data %>% filter(substr(energy_data$time,6,7) == "07") # energy data is fetched of july's month
+    energy_july <- energy_july %>% select("out.electricity.ceiling_fan.energy_consumption",
+                                          "out.electricity.clothes_dryer.energy_consumption",
+                                          "out.electricity.clothes_washer.energy_consumption",
+                                          "out.electricity.cooling_fans_pumps.energy_consumption",
+                                          "out.electricity.cooling.energy_consumption",
+                                          "out.electricity.dishwasher.energy_consumption",
+                                          "out.electricity.freezer.energy_consumption",
+                                          "out.electricity.heating_fans_pumps.energy_consumption",
+                                          "out.electricity.heating_hp_bkup.energy_consumption",
+                                          "out.electricity.heating.energy_consumption",
+                                          "out.electricity.hot_tub_heater.energy_consumption",
+                                          "out.electricity.hot_tub_pump.energy_consumption",
+                                          "out.electricity.hot_water.energy_consumption",
+                                          "out.electricity.lighting_exterior.energy_consumption",
+                                          "out.electricity.lighting_garage.energy_consumption",
+                                          "out.electricity.lighting_interior.energy_consumption",
+                                          "out.electricity.mech_vent.energy_consumption",
+                                          "out.electricity.plug_loads.energy_consumption",
+                                          "out.electricity.pool_heater.energy_consumption",
+                                          "out.electricity.pool_pump.energy_consumption",
+                                          "out.electricity.pv.energy_consumption",
+                                          "out.electricity.range_oven.energy_consumption",
+                                          "out.electricity.refrigerator.energy_consumption",
+                                          "out.electricity.well_pump.energy_consumption",
+                                          "time")
+    energy_july <- na.omit(energy_july) # missing values are removed.
+    energy_july_daa <- energy_july %>% select(-time) # time column is removed 
+    combined_usage <- rowSums(energy_july_daa) # the data is added row wise
+    energy_july <- add_column(energy_july,combined_usage) # This combined data is added as new column
+    energy_july <- add_column(energy_july,bldg_id)# house number column is added as new column to energy dataset
+    energy_july <- energy_july[,c("time","combined_usage","bldg_id")]
+    energy_july$date <- substr(energy_july$time,1,10)
+    energy_july$date <- as.Date(energy_july$date) # date column is converted to date datatype
+    energy_july_new <- assign(paste0("energy_july_", i), energy_july)
+    merged_energy_house <- merged_function_house(energy_july_new)
+    merged_final_weather <- merged_function_weather(merged_energy_house)
+    assign(paste0("merged_final_weather_", i), merged_final_weather)# assigning final merged dataset according to house number
+    
+}
+
+```
+
+
+```{r}
+# All the merged data of every house is combined by using rbind function.
+binded_data <- ls(pattern = "^merged_final_weather_")
+binded_data <- do.call(rbind, lapply(binded_data, function(x) get(x)))
+```
+
+
+```{r}
+# The binded data is then converted to csv file.
+write.csv(binded_data,'binded_data.csv')
+```
+
+
+```{r}
+# Random sampling is done from the binded data.
+sampling_data <-binded_data[sample(nrow(binded_data), 1000 , replace = TRUE), ]
+
+# Only the columns are taken which could have impact on change in energy with 
+# respect to this research question.
+
+listingsvm_df <- data.frame(bldg_id = sampling_data$bldg_id,
+                            energy_usage = sampling_data$combined_usage, 
+                            temperature = sampling_data$`Dry Bulb Temperature [°C]`,
+                            humidity = sampling_data$`Relative Humidity [%]`,
+                            wind = sampling_data$`Wind Speed [m/s]`,
+                            time = sampling_data$time
+                              )
+# Increasing the temperature by 5 degree and creating a new column in the dataset.
+listingsvm_df$raised_temperature <- listingsvm_df$temperature + 5
+
+# creating the data partition in the dataset.
+trainList <- createDataPartition(listingsvm_df$energy_usage,p=.70,list=FALSE) # partitioning dataset 
+trainSet <- listingsvm_df[trainList,] # 70% train set
+testSet <- listingsvm_df[-trainList,] # 30% test set
+
+
+# Implementing KSVM model on train set.
+fit <- ksvm(energy_usage ~ raised_temperature , data = trainSet, C = 5, cross = 3, prob.model = TRUE)
+fit
+
+# Predicting the energy usage of test set based on model which was created.
+svm_perd <- predict(fit, testSet)
+svm_perd  
+
+# Extracting columns into new variables.
+temperature <- listingsvm_df$temperature
+raised_temperature <- listingsvm_df$raised_temperature
+energy_usage <- listingsvm_df$energy_usage
+predicted_increased <- svm_perd
+time <- listingsvm_df$time
+change <- listingsvm_df$change_in_usage
+
+
+
+# Combine the variables into a matrix for matplot
+y_values <- cbind(temperature, raised_temperature,energy_usage,predicted_increased)
+
+# Creating the plot
+matplot(y_values, type = "l", lty = 1, col = c("blue", "red", "green","purple"),
+        main = "Temperature and Energy Usage Trends",
+        xlab = "Observation Index", ylab = "Values")
+
+# Adding legend
+legend("bottomright", legend = c("Temperature", "Raised Temperature", "Energy Usage", "Predicted Increased"),
+       col = c("blue", "red", "green", "purple"), lty = 1)
+
+
+# Combine the variables into a matrix for matplot to show change in energy usage
+y_values <- cbind(energy_usage, predicted_increased)
+
+
+# Creating the plot
+matplot(y_values, type = "l", lty = 1, col = c("blue", "red"),
+        main = "Energy Usage Trends",
+        xlab = "Temperature & Energy", ylab = "Values")
+
+```
+
+
+```{r}
+# Calculating mean absolute error (mae).
+mae <- mean(abs(svm_perd - testSet$energy_usage))
+print(paste("Mean Absolute Error (MAE):", mae)) 
+
+```
+
+
+
+```{r}
+
+# 2nd RESEARCH QUESTION ANALYSIS
+
+```
+
+
+```{r}
+# These counties are selected as it has maximum number of houses.
+housing_data_1 <- static_house_data %>% filter(in.county %in% c("G4500830","G4500510","G4500790","G4500150","G4500730"))
+list_county_1 <-unique(housing_data_1$in.county)
+list_county_1# List of unique counties
+
+for (i in list_county_1) {
+  county_name <- i
+  url_weather <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/",i,".csv")
+  weather_data_july_1 <- read_csv(url_weather)
+  weather_data_july_1 <- na.omit(weather_data_july_1) # to remove the missing values
+  weather_data_july_1 <- weather_data_july_1 %>% filter(substr(weather_data_july_1$date_time,6,7) == "07") 
+  weather_data_july_1 <- weather_data_july_1 %>% rename(time = date_time) #The column name date_time is renamed to time
+  weather_data_july_1 <- add_column(weather_data_july_1, county_name) # new column is added called county name.
+  assign(paste0("weather_july_", i), weather_data_july_1) # assigning name of each weather data according to county name.
+}
+
+```
+
+```{r}
+# The function is to merge the housing data with energy data. The merge data is
+# than returned.
+
+merged_function_house_1 <- function(energy_july){
+  merged_data <- merge(random_house_data_1,energy_july)
+  return(merged_data)
+}
+```
+
+
+```{r}
+# The function "rbind" is used to merge all the weather dataframe of considered 
+# counties.
+
+combined_weather_data_1 <- rbind(weather_july_G4500830,
+                                 weather_july_G4500510,
+                                 weather_july_G4500790,
+                                 weather_july_G4500150,
+                                 weather_july_G4500730)
+```
+
+
+```{r}
+# The function is to merge combined weather data with merged_energy_housing data.
+# the final merged data is returned.
+
+merged_function_weather_1 <- function(weather_data_new){
+  merged_data <- merge(combined_weather_data_1,weather_data_new)
+  return(merged_data)
+}
+
+```
+
+
+```{r}
+region <- "south carolina"
+county_list_1 <- as.list(static_house_data$bldg_id) # List of house number is fetched.
+random_house_data_1 <- housing_data_1[sample(nrow(housing_data_1), 200 , replace = TRUE), ] # Random sample of 200 is taken from it.
+random_house_data_1 <- random_house_data_1 %>% rename(county_name = in.county)# rename of column is dane to county_name
+random_house_data_1$region <- "south carolina"
+list_house_1 <- random_house_data_1$bldg_id # List of house number is fetched from random sampling.
+```
+
+
+
+
+
+
+```{r}
+# Fetching energy data of every house present in the above mentioned counties.
+for (i in list_house_1) {
+    bldg_id <- i
+    url_data <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/2023-houseData/",i,".parquet")
+    energy_data <- read_parquet(url_data) # energy data is fetched according to house number
+    energy_july <- energy_data %>% filter(substr(energy_data$time,6,7) == "07") # energy data is fetched of july's month
+    energy_july <- energy_july %>% select("out.electricity.ceiling_fan.energy_consumption",
+                                          "out.electricity.clothes_dryer.energy_consumption",
+                                          "out.electricity.clothes_washer.energy_consumption",
+                                          "out.electricity.cooling_fans_pumps.energy_consumption",
+                                          "out.electricity.cooling.energy_consumption",
+                                          "out.electricity.dishwasher.energy_consumption",
+                                          "out.electricity.freezer.energy_consumption",
+                                          "out.electricity.heating_fans_pumps.energy_consumption",
+                                          "out.electricity.heating_hp_bkup.energy_consumption",
+                                          "out.electricity.heating.energy_consumption",
+                                          "out.electricity.hot_tub_heater.energy_consumption",
+                                          "out.electricity.hot_tub_pump.energy_consumption",
+                                          "out.electricity.hot_water.energy_consumption",
+                                          "out.electricity.lighting_exterior.energy_consumption",
+                                          "out.electricity.lighting_garage.energy_consumption",
+                                          "out.electricity.lighting_interior.energy_consumption",
+                                          "out.electricity.mech_vent.energy_consumption",
+                                          "out.electricity.plug_loads.energy_consumption",
+                                          "out.electricity.pool_heater.energy_consumption",
+                                          "out.electricity.pool_pump.energy_consumption",
+                                          "out.electricity.pv.energy_consumption",
+                                          "out.electricity.range_oven.energy_consumption",
+                                          "out.electricity.refrigerator.energy_consumption",
+                                          "out.electricity.well_pump.energy_consumption",
+                                          "time")
+    energy_july <- na.omit(energy_july) # missing values are removed.
+    energy_july_daa_1 <- energy_july %>% select(-time) # time column is removed 
+    combined_usage <- rowSums(energy_july_daa_1) # the data is added row wise
+    energy_july <- add_column(energy_july,combined_usage) # This combined data is added as new column
+    energy_july <- add_column(energy_july,bldg_id)# house number column is added as new column to energy dataset
+    energy_july <- energy_july[,c("time","combined_usage","bldg_id")]
+    energy_july$date <- substr(energy_july$time,1,10)
+    energy_july$date <- as.Date(energy_july$date) # date column is converted to date datatype
+    energy_july_new_daa <- assign(paste0("energy_july_", i), energy_july)
+    merged_energy_house <- merged_function_house_1(energy_july_new_daa)
+    merged_final_weather <- merged_function_weather_1(merged_energy_house)
+    assign(paste0("merged_final_1_weather_", i), merged_final_weather)# assigning final merged dataset according to house number
+    
+}
+
+```
+
+
+```{r}
+# All the merged data of every house is combined by using rbind function.
+binded_data_1 <- ls(pattern = "^merged_final_1_weather_")
+binded_data_1 <- do.call(rbind, lapply(binded_data_1, function(x) get(x)))
+```
+
+
+```{r}
+# Converting the binded data into csv file.
+write.csv(binded_data_1,'binded_data_1.csv')
+```
+
+
+```{r}
+# Random sampling is done from the binded data.
+sampling_data_1 <-binded_data_1[sample(nrow(binded_data_1), 8000 , replace = TRUE), ]
+
+
+# Only the columns are taken which could have impact on change in energy with 
+# respect to this research question.
+listingsvm_df_1 <- data.frame(bldg_id,
+                            Time = sampling_data_1$time,
+                            sqFt = sampling_data_1$in.sqft,
+                            energy_usage = sampling_data_1$combined_usage,
+                            year_built = sampling_data_1$in.vintage)
+
+# removing patterns and converting it to numeric datatype.
+listingsvm_df_1$year_built <- as.numeric(gsub("<", "", gsub("s", "", listingsvm_df_1$year_built)))
+
+
+# Creating age_group column where houses which are older than 50 years are 
+# consider as old and rest are consider as new. Here the age_group is created by
+# subtracting present year with the year the house was build.
+listingsvm_df_1 <- listingsvm_df_1 %>%
+  mutate(vintage = 2024 - year_built,                     # Current year 2024
+         age_group = ifelse(vintage > 50, "old", "new"))
+
+
+listingsvm_df_1$age_group <- as.factor(listingsvm_df_1$age_group) # Ensure age_group is a factor
+listingsvm_df_1 <- listingsvm_df_1 %>% ungroup() # Remove grouping for model compatibility
+
+
+# Partition the dataset into training and testing sets
+set.seed(123) # For reproducibility
+trainList_1 <- createDataPartition(listingsvm_df_1$energy_usage, p = 0.7, list = FALSE)
+trainSet_1 <- listingsvm_df_1[trainList_1, ] # 80% train set
+testSet_1 <- listingsvm_df_1[-trainList_1, ] # 20% test set
+
+# Implementing rabdom forest model on train set.
+fit_rf <- randomForest(
+  energy_usage ~ sqFt + vintage + age_group,  # Formula for predictors
+  data = trainSet_1,                          # Training dataset
+  ntree = 500,                               # Number of trees
+  mtry = 2,                                   # Number of predictors to consider at each split
+  importance = TRUE,                          # To compute variable importance
+  na.action = na.omit                         # Handle missing values
+)
+
+# Print the Random Forest model
+print(fit_rf)
+
+# Variable importance
+importance(fit_rf)
+
+# Predict energy usage of test set based on the model which was created.
+rf_pred <- predict(fit_rf, newdata = testSet_1)
+
+
+# Creating a boxplot of energy usage of old houses vs new houses of same sqFt.
+ ggplot(testSet_1, aes(x = factor(sqFt), y = energy_usage, color = age_group)) +
+  geom_boxplot() +
+  labs(
+    title = "Energy Usage Comparison Between Old and New Houses by sqFt",
+    x = "Square Footage (sqFt)",
+    y = "Energy Usage",
+    color = "House Age Group"
+  ) +
+  theme_minimal() 
+```
+
+
+```{r}
+# Calulating Mean Absolute Error (MAE)
+mae_rf <- mean(abs(rf_pred - testSet_1$energy_usage))
+print(paste("Mean Absolute Error (MAE):", mae_rf))
+
+# R-squared value
+actual <- testSet_1$energy_usage
+rsq_rf <- 1 - (sum((rf_pred - actual)^2) / sum((actual - mean(actual))^2))
+print(paste("R-squared:", rsq_rf))
+```
+
+
+
+
+
+
+```{r}
+
+# 3rd RESEARCH QUESTION ANALYSIS
+
+```
+
+
+```{r}
+# The next set of counties are selected which contain high number of enteries.
+housing_data_2 <- static_house_data %>% filter(in.county %in% c("G4500750","G4500670","G4500430","G4500130","G4500010","G4500710","G4500490","G4500850","G4500550","G4500630","G4500290"))
+list_county_2 <-unique(housing_data_2$in.county)
+list_county_2# List of unique counties
+
+for (i in list_county_2) {
+  county_name <- i
+  url_weather <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/",i,".csv")
+  weather_data_july_2 <- read_csv(url_weather)
+  weather_data_july_2 <- na.omit(weather_data_july_2) # to remove the missing values
+  weather_data_july_2 <- weather_data_july_2 %>% filter(substr(weather_data_july_2$date_time,6,7) == "07") 
+  weather_data_july_2 <- weather_data_july_2 %>% rename(time = date_time) #The column name date_time is renamed to time
+  weather_data_july_2 <- add_column(weather_data_july_2, county_name) # new column is added called county name.
+  assign(paste0("weather_july_", i), weather_data_july_2) # assigning name of each weather data according to county name.
+}
+ 
+```
+
+```{r}
+# The function is to merge the housing data with energy data. The merge data is
+# than returned.
+
+merged_function_house_2 <- function(energy_july){
+  merged_data <- merge(random_house_data_2,energy_july)
+  return(merged_data)
+}
+```
+
+
+```{r}
+# The function "rbind" is used to merge all the weather dataframe of considered 
+# counties.
+
+combined_weather_data_2 <- rbind(weather_july_G4500750,
+                                 weather_july_G4500670,
+                                 weather_july_G4500430,
+                                 weather_july_G4500130,
+                                 weather_july_G4500010,
+                                 weather_july_G4500710,
+                                 weather_july_G4500490,
+                                 weather_july_G4500850,
+                                 weather_july_G4500550,
+                                 weather_july_G4500630,
+                                 weather_july_G4500290)
+
+```
+
+
+```{r}
+# The function is to merge combined weather data with merged_energy_housing data.
+# the final merged data is returned.
+
+merged_function_weather_2 <- function(weather_data_new){
+  merged_data <- merge(combined_weather_data_2,weather_data_new)
+  return(merged_data)
+}
+
+```
+
+
+```{r}
+region <- "south carolina"
+county_list_2 <- as.list(static_house_data$bldg_id) # List of house number is fetched.
+random_house_data_2 <- housing_data_2[sample(nrow(housing_data_2), 600, replace = TRUE), ] # Random sample of 200 is taken from it.
+random_house_data_2 <- random_house_data_2 %>% rename(county_name = in.county)# rename of column is dane to county_name
+random_house_data_2$region <- "south carolina"
+list_house_2 <- random_house_data_2$bldg_id # List of house number is fetched from random sampling.
+```
+
+
+
+
+
+
+```{r}
+# Fetching energy data of every houses from the counties that are mentioned above.
+for (i in list_house_2) {
+    bldg_id <- i
+    url_data <- paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/2023-houseData/",i,".parquet")
+    energy_data <- read_parquet(url_data) # energy data is fetched according to house number
+    energy_july <- energy_data %>% filter(substr(energy_data$time,6,7) == "07") # energy data is fetched of july's month
+    energy_july <- na.omit(energy_july)# missing values are removed.
+    energy_july_new <- energy_july %>% select(-time) # time column is removed 
+    combined_usage <- rowSums(energy_july_new) # the data is added row wise
+    energy_july <- add_column(energy_july,combined_usage) # This combined data is added as new column
+    energy_july <- add_column(energy_july,bldg_id)# house number column is added as new column to energy dataset
+    energy_july <- energy_july[,c("time","combined_usage","bldg_id","out.electricity.ceiling_fan.energy_consumption","out.electricity.cooling.energy_consumption")]
+    energy_july$date <- substr(energy_july$time,1,10)
+    energy_july$date <- as.Date(energy_july$date) # date column is converted to date datatype
+    energy_july_new_2 <- assign(paste0("energy_2_july_", i), energy_july)
+    merged_energy_house_2 <- merged_function_house_2(energy_july_new_2)
+    merged_final_weather_2 <- merged_function_weather_2(merged_energy_house_2)
+    assign(paste0("merged_final_2_weather_", i), merged_final_weather_2)# assigning final merged dataset according to house number
+    
+}
+```
+
+
+```{r}
+# All the merged data of every house is combined by using rbind function.
+binded_data_2 <- ls(pattern = "^merged_final_2_weather_")
+binded_data_2 <- do.call(rbind, lapply(binded_data_2, function(x) get(x)))
+```
+
+
+
+```{r}
+# Random sampling is done from binded data.
+sampling_data_2 <- binded_data_2[sample(nrow(binded_data_2), 8000, replace = TRUE), ]
+
+# Only the columns are taken which could have impact on change in energy with 
+# respect to this research question.
+listingsvm_df_2 <- data.frame(
+  bldg_id = sampling_data_2$bldg_id,
+  Time = sampling_data_2$time,
+  humidity = sampling_data_2$`Relative Humidity [%]`,
+  wind = sampling_data_2$`Wind Speed [m/s]`,
+  temperature = sampling_data_2$`Dry Bulb Temperature [°C]`,
+  energy_usage = sampling_data_2$combined_usage,
+  region = sampling_data_2$region,
+  fan_energy = sampling_data_2$out.electricity.ceiling_fan.energy_consumption,
+  cooling_system_energy = sampling_data_2$out.electricity.cooling.energy_consumption
+)
+
+# Increasing energy usage of fan by adding average energy usage of fan energy to initial values
+listingsvm_df_2$raised_fan_usage <- listingsvm_df_2$fan_energy + mean(listingsvm_df_2$fan_energy)
+
+# creating data partiton into dataset
+trainList_2 <- createDataPartition(listingsvm_df_2$energy_usage, p = 0.8, list = FALSE)
+trainSet_2 <- listingsvm_df_2[trainList_2, ] # 80% train set
+testSet_2 <- listingsvm_df_2[-trainList_2, ] # 20% test set.
+
+
+# Implementing random forest model on train set.
+rf_model_2 <- randomForest(energy_usage ~ fan_energy + cooling_system_energy + raised_fan_usage,
+                           data = trainSet_2,   # Training dataset
+                           ntree = 500,         # Number of trees in the forest
+                           mtry = 2,            # Number of variables to consider at each split
+                           importance = TRUE)   # Enable feature importance
+
+# Print results of the Random Forest model
+print(rf_model_2)
+
+# Predicting energy usage of of test set based on model which was created.
+rf_predictions_2 <- predict(rf_model_2, newdata = testSet_2)
+
+
+# Add predictions to the test set
+testSet_2$predicted_energy_usage <- rf_predictions_2
+
+# Converting data to long format for ggplot.
+library(tidyr)
+boxplot_data <- testSet_2 %>%
+  select(energy_usage, predicted_energy_usage) %>%
+  pivot_longer(cols = c(energy_usage, predicted_energy_usage),
+               names_to = "Category",
+               values_to = "Values")
+
+# Creating the boxplot.
+library(ggplot2)
+ggplot(boxplot_data, aes(x = Category, y = Values, fill = Category)) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) + # Highlight outliers
+  labs(
+    title = "Boxplot of Actual vs. Predicted Energy Usage",
+    x = "Category",
+    y = "Energy Usage"
+  ) +
+  scale_y_continuous(name = "Energy Usage") +  
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",  # Remove legend as Category labels are sufficient
+    plot.title = element_text(hjust = 0.5)  # Center the title
+  )
+
+
+```
+
+
+```{r}
+# Calculating Mean Absolute Error (MAE)
+mae_rf_2 <- mean(abs(rf_predictions_2 - testSet_2$energy_usage))
+
+# Printing the MAE value for the Random Forest model
+print(paste("Mean Absolute Error (MAE) for Random Forest:", mae_rf_2))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
